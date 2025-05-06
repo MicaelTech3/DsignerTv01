@@ -11,6 +11,7 @@ const firebaseConfig = {
 // Initialize Firebase
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
+const storage = firebase.storage();
 
 // DOM Elements
 const elements = {
@@ -26,10 +27,21 @@ const elements = {
 let currentKey = loadKey();
 let unsubscribe = null;
 let currentMedia = null;
+let dbStore = null;
+
+// Initialize IndexedDB
+async function initIndexedDB() {
+    dbStore = await idb.openDB('dsigner-offline', 1, {
+        upgrade(db) {
+            db.createObjectStore('mediaFiles', { keyPath: 'url' });
+        }
+    });
+}
 
 // Initial Setup
 elements.activationKey.textContent = currentKey;
 updateGenStatus('Pronto para uso', 'online');
+initIndexedDB().catch(err => console.error('Erro ao inicializar IndexedDB:', err));
 
 // Event Listeners
 elements.viewBtn.addEventListener('click', enterPlayerMode);
@@ -55,10 +67,10 @@ function generateKey() {
     return key;
 }
 
-function enterPlayerMode() {
+async function enterPlayerMode() {
     elements.generatorMode.style.display = 'none';
     elements.playerMode.style.display = 'block';
-    initPlayerMode(currentKey);
+    await initPlayerMode(currentKey);
     enterFullscreen();
 }
 
@@ -75,7 +87,6 @@ function enterFullscreen() {
     else if (element.mozRequestFullScreen) element.mozRequestFullScreen();
     else if (element.webkitRequestFullscreen) element.webkitRequestFullscreen();
     else if (element.msRequestFullscreen) element.msRequestFullscreen();
-
     document.body.classList.add('fullscreen-mode');
 }
 
@@ -87,7 +98,6 @@ function exitFullscreen() {
         else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
         else if (document.msExitFullscreen) document.msExitFullscreen();
     }
-
     document.body.classList.remove('fullscreen-mode');
 }
 
@@ -110,11 +120,73 @@ function clearMedia() {
     currentMedia = null;
 }
 
+// Offline Storage Functions
+async function saveMediaOffline(media) {
+    localStorage.setItem(`media_${currentKey}`, JSON.stringify(media));
+    if (media.tipo === 'image' || media.tipo === 'video') {
+        await cacheFile(media.url);
+    } else if (media.tipo === 'playlist' && media.items) {
+        for (const item of media.items) {
+            if (item.type === 'image' || item.type === 'video') {
+                await cacheFile(item.url);
+            }
+        }
+    }
+}
+
+async function cacheFile(url) {
+    try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Falha ao baixar arquivo');
+        const blob = await response.blob();
+        await dbStore.put('mediaFiles', { url, blob });
+        console.log('Arquivo salvo no IndexedDB:', url);
+    } catch (err) {
+        console.error('Erro ao salvar arquivo:', url, err);
+    }
+}
+
+async function loadMediaOffline() {
+    const mediaJson = localStorage.getItem(`media_${currentKey}`);
+    if (!mediaJson) return null;
+    const media = JSON.parse(mediaJson);
+    if (media.tipo === 'image' || media.tipo === 'video') {
+        media.url = await getCachedFileUrl(media.url);
+    } else if (media.tipo === 'playlist' && media.items) {
+        for (const item of media.items) {
+            if (item.type === 'image' || item.type === 'video') {
+                item.url = await getCachedFileUrl(item.url);
+            }
+        }
+    }
+    return media;
+}
+
+async function getCachedFileUrl(url) {
+    const file = await dbStore.get('mediaFiles', url);
+    if (file && file.blob) {
+        return URL.createObjectURL(file.blob);
+    }
+    return url;
+}
+
 // Player Mode Functions
-function initPlayerMode(key) {
+async function initPlayerMode(key) {
     updatePlayerStatus('Conectando...', 'offline');
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+
+    if (!navigator.onLine) {
+        const offlineMedia = await loadMediaOffline();
+        if (offlineMedia) {
+            handleMediaUpdateOffline(offlineMedia);
+            updatePlayerStatus('⚡ Offline - Usando dados locais', 'offline');
+        } else {
+            showError('Nenhum conteúdo offline disponível');
+        }
+        return;
+    }
+
     startPublicListening(key);
 }
 
@@ -125,6 +197,14 @@ function handleOnline() {
 
 function handleOffline() {
     updatePlayerStatus('⚡ Offline', 'offline');
+    stopListening();
+    loadMediaOffline().then(offlineMedia => {
+        if (offlineMedia) {
+            handleMediaUpdateOffline(offlineMedia);
+        } else {
+            showError('Nenhum conteúdo offline disponível');
+        }
+    });
 }
 
 function startPublicListening(key) {
@@ -133,8 +213,10 @@ function startPublicListening(key) {
     stopListening();
 
     unsubscribe = db.ref('midia/' + key).on('value', 
-        (snapshot) => {
+        async (snapshot) => {
             if (snapshot.exists()) {
+                const media = snapshot.val();
+                await saveMediaOffline(media);
                 handleMediaUpdate(snapshot);
             } else {
                 showError('Nenhum conteúdo encontrado para esta chave');
@@ -143,13 +225,20 @@ function startPublicListening(key) {
         (error) => {
             console.error('Erro ao acessar mídia:', error);
             updatePlayerStatus('Erro de conexão: ' + error.message, 'offline');
+            loadMediaOffline().then(offlineMedia => {
+                if (offlineMedia) {
+                    handleMediaUpdateOffline(offlineMedia);
+                } else {
+                    showError('Erro de conexão e nenhum conteúdo offline disponível');
+                }
+            });
         }
     );
 }
 
 function handleMediaUpdate(snapshot) {
     const media = snapshot.val();
-    if (JSON.stringify(currentMedia) === JSON.stringify(media)) return; // Evita recarregar a mesma mídia
+    if (JSON.stringify(currentMedia) === JSON.stringify(media)) return;
     currentMedia = media;
     console.log('Mídia recebida:', media);
 
@@ -189,16 +278,54 @@ function handleMediaUpdate(snapshot) {
     }
 }
 
+function handleMediaUpdateOffline(media) {
+    if (JSON.stringify(currentMedia) === JSON.stringify(media)) return;
+    currentMedia = media;
+    console.log('Mídia offline carregada:', media);
+
+    elements.mediaDisplay.innerHTML = '';
+
+    if (media.tipo === 'text') {
+        const textDiv = document.createElement('div');
+        textDiv.className = 'text-message';
+        textDiv.textContent = media.content;
+        textDiv.style.background = media.bgColor || '#2a2f5b';
+        textDiv.style.color = media.color || 'white';
+        textDiv.style.fontSize = `${media.fontSize || 24}px`;
+        elements.mediaDisplay.appendChild(textDiv);
+    } else if (media.tipo === 'image') {
+        const img = document.createElement('img');
+        img.src = media.url;
+        img.onerror = () => showError('Erro ao carregar a imagem offline');
+        elements.mediaDisplay.appendChild(img);
+    } else if (media.tipo === 'video') {
+        const video = document.createElement('video');
+        video.src = media.url;
+        video.autoplay = true;
+        video.muted = true;
+        video.playsinline = true;
+        video.controls = false;
+        video.loop = media.loop || false;
+        video.onerror = () => showError('Erro ao carregar o vídeo offline');
+        video.onloadeddata = () => video.play().catch(e => showError('Falha ao reproduzir o vídeo offline'));
+        elements.mediaDisplay.appendChild(video);
+    } else if (media.tipo === 'playlist' && media.items && media.items.length > 0) {
+        playPlaylist(media.items);
+    } else {
+        showError('Tipo de mídia offline desconhecido');
+    }
+}
+
 function playPlaylist(items) {
     let currentIndex = 0;
     const sortedItems = items.slice().sort((a, b) => (a.order || 0) - (b.order || 0));
 
     function showNextItem() {
-        if (currentIndex >= sortedItems.length) currentIndex = 0; // Volta ao início
+        if (currentIndex >= sortedItems.length) currentIndex = 0;
         const item = sortedItems[currentIndex];
         console.log('Exibindo item da playlist:', item);
 
-        elements.mediaDisplay.innerHTML = ''; // Limpa o container
+        elements.mediaDisplay.innerHTML = '';
 
         if (item.type === 'image') {
             const img = document.createElement('img');
@@ -212,7 +339,7 @@ function playPlaylist(items) {
             setTimeout(() => {
                 currentIndex++;
                 showNextItem();
-            }, (item.duration || 10) * 1000); // Duração padrão de 10s
+            }, (item.duration || 10) * 1000);
         } else if (item.type === 'video') {
             const video = document.createElement('video');
             video.src = item.url;
@@ -242,7 +369,7 @@ function playPlaylist(items) {
         }
     }
 
-    showNextItem(); // Inicia a playlist
+    showNextItem();
 }
 
 function showError(message) {
@@ -263,35 +390,3 @@ function updatePlayerStatus(message, status) {
         statusEl.className = `connection-status ${status}`;
     }
 }
-
-// CSS
-const style = document.createElement('style');
-style.textContent = `
-    .error-message {
-        color: #ff5555;
-        font-size: 24px;
-        text-align: center;
-        padding: 20px;
-    }
-    .text-message {
-        padding: 20px;
-        border-radius: 10px;
-        max-width: 80%;
-        margin: 0 auto;
-        text-align: center;
-        word-break: break-word;
-    }
-    #media-display {
-        width: 100%;
-        height: 100%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-    video, img {
-        max-width: 100%;
-        max-height: 100%;
-        object-fit: contain;
-    }
-`;
-document.head.appendChild(style);
