@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dskey - Dsigner</title>
+    <link rel="stylesheet" href="dskey.css">
+    <style>
+        .error-message {
+            color: #ff5555;
+            font-size: 24px;
+            text-align: center;
+            padding: 20px;
+        }
+        .text-message {
+            padding: 20px;
+            border-radius: 10px;
+            max-width: 80%;
+            margin: 0 auto;
+            text-align: center;
+            word-break: break-word;
+        }
+        #media-display {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        video, img {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+        .connection-status {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+            z-index: 1000;
+        }
+        .connection-status.online { color: #00ff00; }
+        .connection-status.offline { color: #ff5555; }
+    </style>
+</head>
+<body>
+    <div id="generator-mode">
+        <div class="logo">DsignerTv</div>
+        <p class="description">
+            VÁ PARA NOSSO PAINEL EM
+        <span class="link-part1">https://tv</span><span class="link-part2">dsigner.com.br/</span>
+        <div class="key-display" id="activation-key"></div>
+        <button class="btn" id="view-btn">Visualizar</button>
+        <div id="gen-status" class="connection-status"></div>
+    </div>
+
+    <div id="player-mode">
+        <div id="media-display"></div>
+        <button id="exit-btn" class="exit-button">Sair</button>
+        <div id="player-status" class="connection-status"></div>
+    </div>
+
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-storage.js"></script>
+    <!-- Biblioteca IndexedDB -->
+    <script src="https://cdn.jsdelivr.net/npm/idb@7.0.2/build/iife/index-min.js"></script>
+    <script src="js/auth.js"></script>
+    <script src="dskey.js"></script>
+</body>
+</html>
